@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+apscheduler
+telethon
+openai
+google-generativeai
+pytz
