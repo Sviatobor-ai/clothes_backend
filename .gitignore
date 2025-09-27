@@ -8,3 +8,19 @@ __pycache__/
 # macOS / Windows
 .DS_Store
 Thumbs.db
+# Env & sessions
+.env
+*.session
+
+# Editors
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
