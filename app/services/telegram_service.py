@@ -242,17 +242,22 @@ async def send_images_and_prompt(
             if len(images) > 10:
                 raise ValueError("Telegram supports at most 10 media files per album")
 
-            for image in images:
+            for idx, image in enumerate(images):
                 data = ensure_png_bytes(image)
                 uploaded = await _run_with_floodwait_retry(
-                    lambda data=data: client.upload_file(data)
+                    lambda data=data, idx=idx: client.upload_file(
+                        data, file_name=f"nb_{idx + 1:02d}.png"
+                    )
                 )
                 uploaded_files.append(uploaded)
 
             if uploaded_files:
                 await _run_with_floodwait_retry(
-                    lambda: client.send_file(entity=target, file=uploaded_files)
+                    lambda: client.send_file(
+                        entity=target, file=uploaded_files, force_document=False
+                    )
                 )
+                logger.info("sent album as photos: count=%d", len(uploaded_files))
 
         text_parts: list[str] = []
         if header:
