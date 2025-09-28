@@ -13,10 +13,12 @@ from fastapi.responses import JSONResponse
 from zoneinfo import ZoneInfo
 
 from app.config import settings
+from app.logging_conf import configure_logging, set_job_context
+from app.middleware import RequestContextMiddleware, get_request_id_from_context
 from app.models.dto import HealthResponse, RunNowResponse
 from app.queue import enqueue_run_now, queue_size
 
-
+configure_logging()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -26,22 +28,17 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
-
-def _configure_logging() -> None:
-    """Ensure basic logging configuration is applied once."""
-
-    root_logger = logging.getLogger()
-    if not root_logger.handlers:
-        logging.basicConfig(level=logging.INFO)
+app.add_middleware(RequestContextMiddleware)
 
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    """Perform startup tasks such as logging configuration."""
+    """Emit an informative startup banner."""
 
-    _configure_logging()
     logger.info(
-        "Starting Nano Banana backend (env=%s, tz=%s, python=%s)",
+        "%s v%s (env=%s, tz=%s, python=%s, structured_logging=true)",
+        app.title,
+        app.version,
         settings.app_env,
         settings.tz,
         sys.version.split()[0],
@@ -52,7 +49,7 @@ async def on_startup() -> None:
 async def on_shutdown() -> None:
     """Log when the application is shutting down."""
 
-    logger.info("Shutting down Nano Banana backend")
+    logger.info("application shutdown")
 
 
 @app.exception_handler(RequestValidationError)
@@ -61,21 +58,54 @@ async def validation_exception_handler(
 ) -> JSONResponse:
     """Return a JSON error when request validation fails."""
 
-    logger.warning("Validation error on %s: %s", request.url.path, exc)
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    request_id = get_request_id_from_context()
+    errors = exc.errors()
+    issue_count = len(errors)
+    logger.warning(
+        "validation error on %s (%d issue(s)) [request_id=%s]",
+        request.url.path,
+        issue_count,
+        request_id,
+    )
+    response = JSONResponse(
+        status_code=422,
+        content={"detail": errors, "request_id": request_id},
+    )
+    if request_id:
+        response.headers["X-Request-ID"] = request_id
+    return response
 
 
 @app.exception_handler(Exception)
-async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+async def generic_exception_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
     """Catch-all handler that returns a 500 JSON response."""
 
-    logger.exception("Unhandled error on %s", request.url.path)
-    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+    request_id = get_request_id_from_context()
+    logger.error(
+        "unhandled error on %s [%s] %s [request_id=%s]",
+        request.url.path,
+        exc.__class__.__name__,
+        exc,
+        request_id,
+        exc_info=True,
+    )
+    response = JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error", "request_id": request_id},
+    )
+    if request_id:
+        response.headers["X-Request-ID"] = request_id
+    return response
 
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     """Return basic service health information."""
+
+    request_id = get_request_id_from_context()
+    logger.info("health probe [request_id=%s]", request_id)
 
     now_utc = datetime.now(timezone.utc)
     local_zone = ZoneInfo(settings.tz)
@@ -96,7 +126,11 @@ async def run_now() -> RunNowResponse:
     """Queue a new run-now job and return its identifier."""
 
     job_id = enqueue_run_now()
-    logger.info("Enqueued run-now job %s", job_id)
+    try:
+        set_job_context(job_id, None)
+        logger.info("run-now request accepted [job_id=%s]", job_id)
+    finally:
+        set_job_context(None, None)
     return RunNowResponse(queued=True, job_id=job_id)
 
 
@@ -104,4 +138,4 @@ if __name__ == "__main__":
     uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)
 
 # Run locally: `uvicorn app.main:app --reload`
-# Endpoints: `curl http://127.0.0.1:8000/health` and `curl -X POST http://127.0.0.1:8000/run-now`
+# Observe logs: `curl -i http://127.0.0.1:8000/health` and `curl -i -X POST http://127.0.0.1:8000/run-now`

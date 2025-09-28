@@ -6,6 +6,8 @@ import asyncio
 import logging
 import uuid
 
+from app import logging_conf
+
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +19,13 @@ def enqueue_run_now() -> str:
 
     job_id = str(uuid.uuid4())
     try:
+        logging_conf.set_job_context(job_id, None)
         _queue.put_nowait(job_id)
+        logger.info("job enqueued (stub)")
     except asyncio.QueueFull:
         logger.warning("Queue is full; job %s could not be enqueued", job_id)
+    finally:
+        logging_conf.set_job_context(None, None)
     return job_id
 
 
