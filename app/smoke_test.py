@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import logging
 import time
 from typing import Sequence
@@ -53,6 +54,11 @@ def main() -> None:
 
     try:
         prompt = assistant_service.generate_prompt_text()
+        LOGGER.info(
+            "generated prompt metadata: length=%d hash=%s",
+            len(prompt),
+            hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8],
+        )
         LOGGER.info("sleeping 30s before image generation")
         time.sleep(30)
         aspect_key = args.aspect.upper()

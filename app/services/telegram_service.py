@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 from getpass import getpass
@@ -98,75 +99,6 @@ async def close_client() -> None:
         if _client:
             await _client.disconnect()
         _client = None
-
-
-def chunk_text(text: str, limit: int = 4096) -> list[str]:
-    """Split text into Telegram-safe chunks without breaking words when possible."""
-
-    if limit <= 0:
-        raise ValueError("limit must be positive")
-
-    if not text:
-        return []
-
-    if len(text) <= limit:
-        return [text]
-
-    def _split_recursive(segment: str, separators: list[str]) -> list[str]:
-        if not separators:
-            return [segment]
-
-        separator = separators[0]
-        pieces = segment.split(separator)
-        units: list[str] = []
-        for index, piece in enumerate(pieces):
-            units.extend(_split_recursive(piece, separators[1:]))
-            if index < len(pieces) - 1:
-                units.append(separator)
-        return units
-
-    units = _split_recursive(text, ["\n\n", "\n", " "])
-    chunks: list[str] = []
-    current = ""
-
-    for unit in units:
-        if unit == "":
-            continue
-
-        remaining = unit
-        while remaining:
-            available = limit - len(current)
-            if available <= 0:
-                if current:
-                    chunks.append(current)
-                    current = ""
-                    available = limit
-                else:
-                    available = limit
-
-            take = min(len(remaining), available)
-            if take <= 0:
-                break
-            current += remaining[:take]
-            remaining = remaining[take:]
-
-            if len(current) >= limit:
-                chunks.append(current)
-                current = ""
-
-        if not remaining and len(current) == limit:
-            chunks.append(current)
-            current = ""
-
-    if current:
-        chunks.append(current)
-
-    # Fallback if the splitting produced nothing due to unexpected input.
-    if not chunks:
-        for start in range(0, len(text), limit):
-            chunks.append(text[start : start + limit])
-
-    return chunks
 
 
 async def _resolve_target_entity(client: TelegramClient):
@@ -299,7 +231,7 @@ async def _run_with_floodwait_retry(
 async def send_images_and_prompt(
     images: list[bytes], prompt_text: str, header: str | None = None
 ) -> None:
-    """Send an image album without caption followed by the full prompt in 4096-char chunks."""
+    """Send an image album without caption followed by the full prompt."""
 
     try:
         client = await _ensure_client()
@@ -332,20 +264,36 @@ async def send_images_and_prompt(
         text_parts.append("Prompt:")
         text_parts.append(prompt_text)
         full_text = "\n".join(text_parts)
-        chunks = chunk_text(full_text, limit=4096)
+        message_count = 0
 
-        for chunk in chunks:
+        try:
             await _run_with_floodwait_retry(
-                lambda chunk=chunk: client.send_message(
-                    target, chunk, link_preview=False
-                )
+                lambda: client.send_message(target, full_text, link_preview=False)
             )
+            message_count += 1
+        except errors.MessageTooLongError:
+            _log_warning(
+                "telegram_send_prompt",
+                warning="message_too_long",
+                prompt_length=len(full_text),
+            )
+            emergency_limit = 4096
+            for start in range(0, len(full_text), emergency_limit):
+                chunk = full_text[start : start + emergency_limit]
+                await _run_with_floodwait_retry(
+                    lambda chunk=chunk: client.send_message(
+                        target, chunk, link_preview=False
+                    )
+                )
+                message_count += 1
+        prompt_hash = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()[:8]
 
         logger.info(
-            "telegram: sent album=%d and prompt parts=%d (prompt length=%d)",
+            "telegram: sent album=%d prompt_messages=%d prompt_length=%d hash=%s",
             len(images),
-            len(chunks),
-            len(full_text),
+            message_count,
+            len(prompt_text),
+            prompt_hash,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("telegram send failed: %s: %s", exc.__class__.__name__, str(exc))
