@@ -68,10 +68,10 @@ def _create_assistant() -> str:
 
 
 def generate_prompt_text() -> str:
-    """Generate a single sanitized, validated prompt string via the Assistants API."""
+    """Generate a single sanitized prompt string via the Assistants API."""
 
+    last_reason: Optional[str] = None
     logged_error = False
-    last_error: Optional[str] = None
     try:
         for attempt in range(2):
             user_prompt = prompt_templates.build_randomized_user_prompt()
@@ -99,31 +99,40 @@ def generate_prompt_text() -> str:
 
             raw_text = _extract_latest_text(thread.id)
             sanitized = sanitize(raw_text)
-            is_valid, reason = validate_prompt(sanitized)
-            if is_valid:
-                context = get_log_context()
-                LOGGER.info(
-                    "assistant prompt generated",
-                    extra={
-                        "len": len(sanitized),
-                        "sha1": _sha1(sanitized),
-                        "request_id": context.get("request_id"),
-                    },
-                )
-                return sanitized
+            if not sanitized:
+                LOGGER.error("assistant prompt generation failed", extra={"reason": "empty_output"})
+                logged_error = True
+                raise RuntimeError("assistant_empty_prompt")
 
-            last_error = reason
-            LOGGER.warning(
-                "assistant prompt validation failed",
-                extra={"reason": reason, "attempt": attempt + 1},
+            is_valid, note = validate_prompt(sanitized)
+            if not is_valid:
+                last_reason = note or "unsafe_prompt"
+                LOGGER.warning(
+                    "assistant prompt blocked",
+                    extra={"reason": last_reason, "attempt": attempt + 1},
+                )
+                continue
+
+            if note:
+                LOGGER.warning("assistant prompt warning", extra={"warning": note})
+
+            context = get_log_context()
+            LOGGER.info(
+                "assistant prompt generated",
+                extra={
+                    "len": len(sanitized),
+                    "sha1": _sha1(sanitized),
+                    "request_id": context.get("request_id"),
+                },
             )
+            return sanitized
 
         LOGGER.error(
             "assistant prompt generation failed",
-            extra={"reason": last_error or "validation_failed"},
+            extra={"reason": last_reason or "unsafe_prompt"},
         )
         logged_error = True
-        raise RuntimeError("prompt_validation_failed")
+        raise RuntimeError("prompt_guard_blocked")
     except Exception as exc:  # noqa: BLE001
         if not logged_error:
             LOGGER.error(

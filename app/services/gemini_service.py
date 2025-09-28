@@ -142,71 +142,15 @@ def _extract_png_bytes(response: Any) -> list[bytes]:
     return images
 
 
-def _extract_from_images_api(resp: Any) -> list[bytes]:
-    """Extract PNG byte payloads from the Images API response."""
+def _generate_with_model(model: genai.GenerativeModel, prompt: str) -> list[bytes]:
+    """Generate images using the ``GenerativeModel`` surface."""
 
-    images_field = getattr(resp, "images", None)
-    if images_field is None and isinstance(resp, dict):
-        images_field = resp.get("images", [])
-
-    pngs: list[bytes] = []
-
-    for image in images_field or []:
-        payload: bytes | None = None
-
-        data_attr = getattr(image, "data", None)
-        if data_attr is None and isinstance(image, dict):
-            data_attr = image.get("data")
-        if isinstance(data_attr, (bytes, bytearray)):
-            payload = bytes(data_attr)
-        elif isinstance(data_attr, str):
-            decoded = _decode_base64(data_attr)
-            if decoded is not None:
-                payload = decoded
-
-        if payload is None:
-            b64_attr = getattr(image, "b64_json", None)
-            if b64_attr is None and isinstance(image, dict):
-                b64_attr = image.get("b64_json")
-            if b64_attr is not None:
-                decoded = _decode_base64(b64_attr)
-                if decoded is not None:
-                    payload = decoded
-
-        if payload is None:
-            continue
-
-        _append_png(pngs, payload)
-
-    if not pngs:
-        LOGGER.warning("images api returned no png bytes")
-
-    return pngs
-
-
-def _generate_with_model(prompt: str, count: int) -> list[bytes]:
-    """Generate images using the stable ``GenerativeModel`` surface."""
-
-    if count <= 0:
-        return []
-
-    model = genai.GenerativeModel(MODEL_NAME)
-    collected: list[bytes] = []
-
-    for _ in range(count):
-        response = _run_with_retry(
-            lambda: model.generate_content(
-                prompt,
-                generation_config={"response_mime_type": "image/png"},
-            )
-        )
-        collected.extend(_extract_png_bytes(response))
-
-    return collected
+    response = _run_with_retry(lambda: model.generate_content(prompt))
+    return _extract_png_bytes(response)
 
 
 def generate_images(prompt: str, n: int = 2, aspect: str = "VERTICAL", fmt: str = "png") -> list[bytes]:
-    """Generate PNG images via Gemini, using either Images API or GenerativeModel."""
+    """Generate PNG images via Gemini using the GenerativeModel defaults."""
 
     if not prompt or not prompt.strip():
         raise ValueError("prompt must be a non-empty string")
@@ -217,35 +161,19 @@ def generate_images(prompt: str, n: int = 2, aspect: str = "VERTICAL", fmt: str 
     if fmt.lower() not in {"png"}:
         raise ValueError("unsupported image format")
 
-    aspect_key = (aspect or "").upper()
-    size_map = {"VERTICAL": "1024x1536", "SQUARE": "1024x1024"}
-    size_str = size_map.get(aspect_key, "1024x1536")
-    prompt_for_model = (
-        f"{prompt}\n\nVertical portrait framing, full outfit visible; target feel ~{size_str}."
-    )
-
     try:
+        model = genai.GenerativeModel(MODEL_NAME)
         pngs: list[bytes] = []
+        missing = n
 
-        images_api = getattr(genai, "Images", None)
-        if images_api is not None:
-            try:
-                response = _run_with_retry(
-                    lambda: images_api.generate(
-                        model=MODEL_NAME,
-                        prompt=prompt_for_model,
-                        number_of_images=n,
-                        size=size_str,
-                        mime_type="image/png",
-                    )
-                )
-                pngs.extend(_extract_from_images_api(response))
-            except Exception as exc:  # noqa: BLE001 - fallback to generative model
-                LOGGER.warning("images api request failed: %s: %s", exc.__class__.__name__, str(exc))
-
-        if len(pngs) < n:
+        for _ in range(2):
+            for _ in range(missing):
+                pngs.extend(_generate_with_model(model, prompt))
+                if len(pngs) >= n:
+                    break
+            if len(pngs) >= n:
+                break
             missing = n - len(pngs)
-            pngs.extend(_generate_with_model(prompt_for_model, missing))
 
         if not pngs:
             raise RuntimeError("no_images_generated")
@@ -253,12 +181,15 @@ def generate_images(prompt: str, n: int = 2, aspect: str = "VERTICAL", fmt: str 
         if len(pngs) > n:
             pngs = pngs[:n]
 
+        if len(pngs) < n:
+            LOGGER.warning(
+                "gemini returned fewer images than requested",
+                extra={"requested": n, "received": len(pngs)},
+            )
+
         LOGGER.info(
-            "gemini: generated images: model=%s size=%s n=%d prompt_sha1=%s",
-            MODEL_NAME,
-            size_str,
-            len(pngs),
-            short_sha1(prompt),
+            "gemini images generated",
+            extra={"model": MODEL_NAME, "count": len(pngs), "sha1": short_sha1(prompt)},
         )
 
         return pngs

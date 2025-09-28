@@ -1,4 +1,4 @@
-"""Basic sanitization and validation for generated prompts."""
+"""Basic sanitization and soft validation for generated prompts."""
 
 from __future__ import annotations
 
@@ -12,46 +12,19 @@ FORBIDDEN_KEYWORDS = {
     "bikini",
     "underwear",
     "see-through",
-    "transparent",
-    "sheer",
     "explicit",
     "erotic",
     "fetish",
-    "latex catsuit",
-    "latex bodysuit",
+    "sexual",
     "lolita",
     "schoolgirl",
     "teen",
     "underage",
     "minor",
-    "gucci",
-    "prada",
-    "chanel",
-    "versace",
-    "balenciaga",
-    "dior",
-    "fendi",
-    "ysl",
-    "saint laurent",
-    "louis vuitton",
-    "lv",
-    "hermes",
-    "burberry",
-    "celine",
-    "armani",
-    "valentino",
-    "givenchy",
-    "coach",
-    "bottega",
-    "miu miu",
-    "dolce",
-    "gabbana",
 }
 
-REQUIRED_KEYWORDS = {"leather", "vertical"}
-
-MIN_LENGTH = 200
-MAX_LENGTH = 900
+_SHORT_HINT_THRESHOLD = 60
+_LONG_HINT_THRESHOLD = 1200
 
 
 def sanitize(text: str) -> str:
@@ -63,7 +36,7 @@ def sanitize(text: str) -> str:
 
 
 def validate_prompt(text: str) -> Tuple[bool, str]:
-    """Validate prompt length and keyword presence."""
+    """Sanitize and softly validate the generated prompt."""
 
     sanitized = sanitize(text)
     if not sanitized:
@@ -74,13 +47,11 @@ def validate_prompt(text: str) -> Tuple[bool, str]:
         if forbidden in normalized:
             return False, f"forbidden_keyword:{forbidden}"
 
-    for required in REQUIRED_KEYWORDS:
-        if required not in normalized:
-            return False, f"missing_required:{required}"
+    warning: str = ""
+    length = len(sanitized)
+    if length < _SHORT_HINT_THRESHOLD:
+        warning = "prompt_short"
+    elif length > _LONG_HINT_THRESHOLD:
+        warning = "prompt_long"
 
-    if len(sanitized) < MIN_LENGTH:
-        return False, "prompt_too_short"
-    if len(sanitized) > MAX_LENGTH:
-        return False, "prompt_too_long"
-
-    return True, ""
+    return True, warning
