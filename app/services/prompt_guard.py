@@ -8,23 +8,19 @@ from typing import Tuple
 FORBIDDEN_KEYWORDS = {
     "nude",
     "nudity",
-    "lingerie",
-    "bikini",
-    "underwear",
-    "see-through",
     "explicit",
     "erotic",
     "fetish",
     "sexual",
+    "porn",
+    "pornographic",
     "lolita",
     "schoolgirl",
     "teen",
     "underage",
     "minor",
+    "child",
 }
-
-_SHORT_HINT_THRESHOLD = 60
-_LONG_HINT_THRESHOLD = 1200
 
 
 def sanitize(text: str) -> str:
@@ -47,11 +43,4 @@ def validate_prompt(text: str) -> Tuple[bool, str]:
         if forbidden in normalized:
             return False, f"forbidden_keyword:{forbidden}"
 
-    warning: str = ""
-    length = len(sanitized)
-    if length < _SHORT_HINT_THRESHOLD:
-        warning = "prompt_short"
-    elif length > _LONG_HINT_THRESHOLD:
-        warning = "prompt_long"
-
-    return True, warning
+    return True, ""
