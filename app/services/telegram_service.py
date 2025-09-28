@@ -8,7 +8,7 @@ import json
 import logging
 from getpass import getpass
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, TypeVar
 
 from telethon import TelegramClient, errors
 
@@ -25,6 +25,8 @@ _SESSION_PATH = _PROJECT_ROOT / _SESSION_NAME
 _client: TelegramClient | None = None
 _client_lock = asyncio.Lock()
 _LOGIN_MODE = False
+
+_T = TypeVar("_T")
 
 
 def sanitize_caption(caption: str, limit: int = 1024) -> str:
@@ -96,6 +98,81 @@ async def close_client() -> None:
         if _client:
             await _client.disconnect()
         _client = None
+
+
+def chunk_text(text: str, limit: int = 4096) -> list[str]:
+    """Split text into Telegram-safe chunks without breaking words when possible."""
+
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+
+    if not text:
+        return []
+
+    if len(text) <= limit:
+        return [text]
+
+    def _split_recursive(segment: str, separators: list[str]) -> list[str]:
+        if not separators:
+            return [segment]
+
+        separator = separators[0]
+        pieces = segment.split(separator)
+        units: list[str] = []
+        for index, piece in enumerate(pieces):
+            units.extend(_split_recursive(piece, separators[1:]))
+            if index < len(pieces) - 1:
+                units.append(separator)
+        return units
+
+    units = _split_recursive(text, ["\n\n", "\n", " "])
+    chunks: list[str] = []
+    current = ""
+
+    for unit in units:
+        if unit == "":
+            continue
+
+        remaining = unit
+        while remaining:
+            available = limit - len(current)
+            if available <= 0:
+                if current:
+                    chunks.append(current)
+                    current = ""
+                    available = limit
+                else:
+                    available = limit
+
+            take = min(len(remaining), available)
+            if take <= 0:
+                break
+            current += remaining[:take]
+            remaining = remaining[take:]
+
+            if len(current) >= limit:
+                chunks.append(current)
+                current = ""
+
+        if not remaining and len(current) == limit:
+            chunks.append(current)
+            current = ""
+
+    if current:
+        chunks.append(current)
+
+    # Fallback if the splitting produced nothing due to unexpected input.
+    if not chunks:
+        for start in range(0, len(text), limit):
+            chunks.append(text[start : start + limit])
+
+    return chunks
+
+
+async def _resolve_target_entity(client: TelegramClient):
+    """Return the Telegram entity for the configured target chat."""
+
+    return await client.get_input_entity(settings.tg_target_chat_id)
 
 
 def _log_success(event: str, **details: object) -> None:
@@ -199,20 +276,80 @@ async def send_images_with_caption(images: list[bytes], caption: str) -> None:
 
     safe_caption = sanitize_caption(caption)
 
-    async def _send(client: TelegramClient) -> None:
-        uploaded_files = []
-        for image in images:
-            data = ensure_png_bytes(image)
-            uploaded_files.append(await client.upload_file(data))
-
-        await client.send_file(
-            entity=settings.tg_target_chat_id,
-            file=uploaded_files,
-            caption=safe_caption or None,
-        )
-
-    await _execute_with_retry("telegram_send_images", _send)
+    await send_images_and_prompt(images, prompt_text=safe_caption)
     _log_success("telegram_send_images", image_count=len(images))
+
+
+async def _run_with_floodwait_retry(
+    operation: Callable[[], Awaitable[_T]],
+) -> _T:
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            return await operation()
+        except errors.FloodWaitError as exc:
+            if attempts >= 2:
+                raise
+            wait_seconds = min(getattr(exc, "seconds", 0) or 0, 30) or 1
+            logger.warning("telegram flood wait: sleeping %s seconds", wait_seconds)
+            await asyncio.sleep(wait_seconds)
+
+
+async def send_images_and_prompt(
+    images: list[bytes], prompt_text: str, header: str | None = None
+) -> None:
+    """Send an image album without caption followed by the full prompt in 4096-char chunks."""
+
+    try:
+        client = await _ensure_client()
+        target = await _resolve_target_entity(client)
+
+        uploaded_files = []
+        if images:
+            if len(images) > 10:
+                raise ValueError("Telegram supports at most 10 media files per album")
+
+            for image in images:
+                data = ensure_png_bytes(image)
+                uploaded = await _run_with_floodwait_retry(
+                    lambda data=data: client.upload_file(data)
+                )
+                uploaded_files.append(uploaded)
+
+            if uploaded_files:
+                await _run_with_floodwait_retry(
+                    lambda: client.send_file(entity=target, file=uploaded_files)
+                )
+
+        text_parts: list[str] = []
+        if header:
+            header_line = header.strip()
+            if header_line:
+                text_parts.append(header_line)
+                text_parts.append("")
+
+        text_parts.append("Prompt:")
+        text_parts.append(prompt_text)
+        full_text = "\n".join(text_parts)
+        chunks = chunk_text(full_text, limit=4096)
+
+        for chunk in chunks:
+            await _run_with_floodwait_retry(
+                lambda chunk=chunk: client.send_message(
+                    target, chunk, link_preview=False
+                )
+            )
+
+        logger.info(
+            "telegram: sent album=%d and prompt parts=%d (prompt length=%d)",
+            len(images),
+            len(chunks),
+            len(full_text),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("telegram send failed: %s: %s", exc.__class__.__name__, str(exc))
+        raise
 
 
 async def _cli_login() -> None:

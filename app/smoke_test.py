@@ -32,16 +32,12 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _format_caption(prompt: str, count: int, aspect: str) -> str:
-    trimmed_prompt = prompt if len(prompt) <= 3000 else f"{prompt[:2997]}..."
-    lines = [
-        "Nano Banana — smoke",
-        f"Model: {gemini_service.MODEL_NAME}",
-        f"Count: {count}, Aspect: {aspect}",
-        "",
-        trimmed_prompt,
-    ]
-    return "\n".join(lines)
+def _format_header(count: int, aspect: str) -> str:
+    return (
+        "Nano Banana — smoke | "
+        f"{gemini_service.MODEL_NAME} | "
+        f"count={count} | aspect={aspect} | format=png"
+    )
 
 
 def _print_diagnostics(images: Sequence[bytes]) -> None:
@@ -64,8 +60,12 @@ def main() -> None:
             LOGGER.info("smoke success: count=%d sent=%s", len(images), False)
             return
 
-        caption = _format_caption(prompt, len(images), aspect_key)
-        asyncio.run(telegram_service.send_images_with_caption(list(images), caption))
+        header = _format_header(len(images), aspect_key)
+        asyncio.run(
+            telegram_service.send_images_and_prompt(
+                list(images), prompt_text=prompt, header=header
+            )
+        )
         LOGGER.info("smoke success: count=%d sent=%s", len(images), True)
     except Exception as exc:  # noqa: BLE001
         LOGGER.error("smoke test failed: %s: %s", exc.__class__.__name__, str(exc))
