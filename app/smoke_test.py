@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import sys
 from typing import Sequence
 
 from app import logging_conf
@@ -62,18 +61,15 @@ def main() -> None:
 
         if args.no_send:
             _print_diagnostics(images)
-            LOGGER.info("smoke success", extra={"count": len(images), "sent": False})
+            LOGGER.info("smoke success: count=%d sent=%s", len(images), False)
             return
 
         caption = _format_caption(prompt, len(images), aspect_key)
         asyncio.run(telegram_service.send_images_with_caption(list(images), caption))
-        LOGGER.info("smoke success", extra={"count": len(images), "sent": True})
+        LOGGER.info("smoke success: count=%d sent=%s", len(images), True)
     except Exception as exc:  # noqa: BLE001
-        LOGGER.error(
-            "smoke test failed",
-            extra={"err": exc.__class__.__name__, "detail": str(exc)},
-        )
-        sys.exit(1)
+        LOGGER.error("smoke test failed: %s: %s", exc.__class__.__name__, str(exc))
+        raise
 
 
 if __name__ == "__main__":

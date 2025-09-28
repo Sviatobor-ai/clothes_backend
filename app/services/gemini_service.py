@@ -22,11 +22,7 @@ LOGGER = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
-class _ImagesApiUnavailable(RuntimeError):
-    """Raised when the experimental Images API surface is not usable."""
-
-
-def _sha1_prefix(text: str) -> str:
+def short_sha1(text: str) -> str:
     """Return the first 12 hexadecimal characters of a SHA1 digest."""
 
     digest = hashlib.sha1(text.encode("utf-8"))
@@ -74,69 +70,28 @@ def _run_with_retry(func: Callable[[], Any]) -> Any:
     raise RuntimeError("unreachable")
 
 
-def _generate_with_images_api(prompt: str, count: int, fmt: str) -> list[bytes]:
-    """Attempt image generation using the experimental ``Images`` surface."""
+def _decode_base64(data: str | bytes | bytearray) -> bytes | None:
+    """Decode base64 input into bytes, returning ``None`` on failure."""
 
-    images_api = None
-    if hasattr(genai, "Images"):
-        images_api = getattr(genai, "Images")
-    elif hasattr(genai, "images"):
-        images_api = getattr(genai, "images")
-
-    if images_api is None:
-        raise _ImagesApiUnavailable("images_api_missing")
-
-    generate_fn = getattr(images_api, "generate", None)
-    if not callable(generate_fn):
-        raise _ImagesApiUnavailable("generate_not_callable")
-
-    def _call() -> Any:
-        last_type_error: Exception | None = None
-        base_options = [
-            {"model": MODEL_NAME, "prompt": prompt, "n": count},
-            {"model": MODEL_NAME, "prompt": prompt, "num_images": count},
-        ]
-        extra_options = [
-            {"mime_type": "image/png"},
-            {"format": fmt},
-            {"image_format": fmt},
-            {},
-        ]
-
-        for base_kwargs in base_options:
-            for extra_kwargs in extra_options:
-                try:
-                    return generate_fn(**base_kwargs, **extra_kwargs)
-                except TypeError as exc:
-                    last_type_error = exc
-                    continue
-        if last_type_error is not None:
-            raise _ImagesApiUnavailable(str(last_type_error))
-        raise _ImagesApiUnavailable("images_api_signature_mismatch")
-
-    response = _run_with_retry(_call)
-    return _extract_png_bytes(response)
+    if isinstance(data, str):
+        try:
+            return base64.b64decode(data, validate=True)
+        except binascii.Error:
+            return None
+    if isinstance(data, (bytes, bytearray)):
+        try:
+            return base64.b64decode(data, validate=True)
+        except binascii.Error:
+            return None
+    return None
 
 
-def _generate_with_model(prompt: str, count: int) -> list[bytes]:
-    """Generate images using the stable ``GenerativeModel`` surface."""
+def _append_png(images: list[bytes], payload: bytes) -> None:
+    """Append ``payload`` to ``images`` and warn on invalid signature."""
 
-    model = genai.GenerativeModel(MODEL_NAME)
-    collected: list[bytes] = []
-
-    for _ in range(count):
-        def _call() -> Any:
-            return model.generate_content(
-                prompt,
-                generation_config={
-                    "response_mime_type": "image/png",
-                },
-            )
-
-        response = _run_with_retry(_call)
-        collected.extend(_extract_png_bytes(response))
-
-    return collected
+    if not payload.startswith(_PNG_SIGNATURE):
+        LOGGER.warning("non-png-signature; len=%d", len(payload))
+    images.append(payload)
 
 
 def _extract_png_bytes(response: Any) -> list[bytes]:
@@ -152,56 +107,106 @@ def _extract_png_bytes(response: Any) -> list[bytes]:
         content = getattr(candidate, "content", None)
         if content is None and isinstance(candidate, dict):
             content = candidate.get("content")
+        if content is None:
+            continue
         parts = getattr(content, "parts", None)
         if parts is None and isinstance(content, dict):
             parts = content.get("parts", [])
-        if not parts:
-            continue
-        for part in parts:
+        for part in parts or []:
             inline_data = getattr(part, "inline_data", None)
             if inline_data is None and isinstance(part, dict):
                 inline_data = part.get("inline_data")
             if not inline_data:
                 continue
-            mime_type = getattr(inline_data, "mime_type", None)
-            if mime_type is None and isinstance(inline_data, dict):
-                mime_type = inline_data.get("mime_type")
+            mime_type = getattr(inline_data, "mime_type", "")
+            if isinstance(inline_data, dict):
+                mime_type = inline_data.get("mime_type", mime_type)
             if mime_type != "image/png":
                 continue
             data = getattr(inline_data, "data", None)
-            if data is None and isinstance(inline_data, dict):
-                data = inline_data.get("data")
-            if not data:
+            if isinstance(inline_data, dict):
+                data = inline_data.get("data", data)
+            if data is None:
                 continue
-            if isinstance(data, str):
-                try:
-                    payload = base64.b64decode(data, validate=True)
-                except binascii.Error:
-                    continue
-            elif isinstance(data, (bytes, bytearray)):
+            if isinstance(data, (bytes, bytearray)):
                 payload = bytes(data)
+            elif isinstance(data, str):
+                decoded = _decode_base64(data)
+                if decoded is None:
+                    continue
+                payload = decoded
             else:
                 continue
-            if not payload.startswith(_PNG_SIGNATURE):
-                LOGGER.warning(
-                    "gemini inline data missing PNG signature",
-                    extra={"reason": "missing_signature", "model": MODEL_NAME},
-                )
-            images.append(payload)
+            _append_png(images, payload)
 
     return images
 
 
-def generate_images(prompt: str, n: int = 2, aspect: str = "VERTICAL", fmt: str = "png") -> list[bytes]:
-    """Generate PNG images via Gemini, using either Images API or GenerativeModel.
+def _extract_from_images_api(resp: Any) -> list[bytes]:
+    """Extract PNG byte payloads from the Images API response."""
 
-    The Google Generative AI SDK is evolving, so this helper first attempts to use
-    the experimental :mod:`Images` surface when available and falls back to the
-    stable :class:`~google.generativeai.GenerativeModel` interface otherwise.
-    If the SDK signatures change in the future, update the `_generate_with_images_api`
-    helper to match the new method names and keyword arguments and remove the
-    compatibility shim when a single path is sufficient.
-    """
+    images_field = getattr(resp, "images", None)
+    if images_field is None and isinstance(resp, dict):
+        images_field = resp.get("images", [])
+
+    pngs: list[bytes] = []
+
+    for image in images_field or []:
+        payload: bytes | None = None
+
+        data_attr = getattr(image, "data", None)
+        if data_attr is None and isinstance(image, dict):
+            data_attr = image.get("data")
+        if isinstance(data_attr, (bytes, bytearray)):
+            payload = bytes(data_attr)
+        elif isinstance(data_attr, str):
+            decoded = _decode_base64(data_attr)
+            if decoded is not None:
+                payload = decoded
+
+        if payload is None:
+            b64_attr = getattr(image, "b64_json", None)
+            if b64_attr is None and isinstance(image, dict):
+                b64_attr = image.get("b64_json")
+            if b64_attr is not None:
+                decoded = _decode_base64(b64_attr)
+                if decoded is not None:
+                    payload = decoded
+
+        if payload is None:
+            continue
+
+        _append_png(pngs, payload)
+
+    if not pngs:
+        LOGGER.warning("images api returned no png bytes")
+
+    return pngs
+
+
+def _generate_with_model(prompt: str, count: int) -> list[bytes]:
+    """Generate images using the stable ``GenerativeModel`` surface."""
+
+    if count <= 0:
+        return []
+
+    model = genai.GenerativeModel(MODEL_NAME)
+    collected: list[bytes] = []
+
+    for _ in range(count):
+        response = _run_with_retry(
+            lambda: model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "image/png"},
+            )
+        )
+        collected.extend(_extract_png_bytes(response))
+
+    return collected
+
+
+def generate_images(prompt: str, n: int = 2, aspect: str = "VERTICAL", fmt: str = "png") -> list[bytes]:
+    """Generate PNG images via Gemini, using either Images API or GenerativeModel."""
 
     if not prompt or not prompt.strip():
         raise ValueError("prompt must be a non-empty string")
@@ -213,59 +218,50 @@ def generate_images(prompt: str, n: int = 2, aspect: str = "VERTICAL", fmt: str 
         raise ValueError("unsupported image format")
 
     aspect_key = (aspect or "").upper()
-    size_map = {
-        "VERTICAL": "1024x1536",
-        "SQUARE": "1024x1024",
-    }
+    size_map = {"VERTICAL": "1024x1536", "SQUARE": "1024x1024"}
     size_str = size_map.get(aspect_key, "1024x1536")
-    if aspect_key == "SQUARE":
-        framing_hint = "Square framing, full outfit visible"
-    else:
-        framing_hint = "Vertical portrait framing, full outfit visible"
-    prompt_hint = f"{prompt}\n\n{framing_hint}; target feel ~{size_str}."
-
-    images: list[bytes] = []
-    attempts = 0
-    max_attempts = 2
+    prompt_for_model = (
+        f"{prompt}\n\nVertical portrait framing, full outfit visible; target feel ~{size_str}."
+    )
 
     try:
-        while len(images) < n and attempts < max_attempts:
-            remaining = n - len(images)
-            new_images: list[bytes] = []
-            if attempts == 0:
-                try:
-                    new_images = _generate_with_images_api(prompt_hint, remaining, fmt.lower())
-                except _ImagesApiUnavailable:
-                    new_images = _generate_with_model(prompt_hint, remaining)
-            else:
-                new_images = _generate_with_model(prompt_hint, remaining)
+        pngs: list[bytes] = []
 
-            attempts += 1
+        images_api = getattr(genai, "Images", None)
+        if images_api is not None:
+            try:
+                response = _run_with_retry(
+                    lambda: images_api.generate(
+                        model=MODEL_NAME,
+                        prompt=prompt_for_model,
+                        number_of_images=n,
+                        size=size_str,
+                        mime_type="image/png",
+                    )
+                )
+                pngs.extend(_extract_from_images_api(response))
+            except Exception as exc:  # noqa: BLE001 - fallback to generative model
+                LOGGER.warning("images api request failed: %s: %s", exc.__class__.__name__, str(exc))
 
-            images.extend(new_images)
+        if len(pngs) < n:
+            missing = n - len(pngs)
+            pngs.extend(_generate_with_model(prompt_for_model, missing))
 
-        if not images:
+        if not pngs:
             raise RuntimeError("no_images_generated")
 
-        if len(images) > n:
-            images = images[:n]
+        if len(pngs) > n:
+            pngs = pngs[:n]
 
         LOGGER.info(
-            "gemini images generated",
-            extra={
-                "model": MODEL_NAME,
-                "size": size_str,
-                "n": n,
-                "prompt_sha1": _sha1_prefix(prompt),
-            },
+            "gemini: generated images: model=%s size=%s n=%d prompt_sha1=%s",
+            MODEL_NAME,
+            size_str,
+            len(pngs),
+            short_sha1(prompt),
         )
-        return images
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.error(
-            "gemini image generation failed",
-            extra={
-                "err": exc.__class__.__name__,
-                "detail": str(exc),
-            },
-        )
+
+        return pngs
+    except Exception as exc:  # noqa: BLE001 - propagate after logging
+        LOGGER.error("gemini image generation failed: %s: %s", exc.__class__.__name__, str(exc))
         raise
