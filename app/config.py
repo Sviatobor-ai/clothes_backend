@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     tg_api_id: int = Field(..., alias="TELEGRAM_API_ID")
     tg_api_hash: str = Field(..., alias="TELEGRAM_API_HASH")
     tg_phone: str = Field(..., alias="TELEGRAM_PHONE")
-    tg_target_chat_id: int = Field(..., alias="TELEGRAM_TARGET_CHAT_ID")
+    tg_target_chat_id: str = Field(..., alias="TELEGRAM_TARGET_CHAT_ID")
 
     # Generation controls
     daily_jobs: int = Field(17, alias="DAILY_JOBS")
