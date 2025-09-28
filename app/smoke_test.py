@@ -71,7 +71,7 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001
         LOGGER.error(
             "smoke test failed",
-            extra={"error": exc.__class__.__name__, "message": str(exc)},
+            extra={"err": exc.__class__.__name__, "detail": str(exc)},
         )
         sys.exit(1)
 
