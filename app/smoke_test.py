@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import time
 from typing import Sequence
 
 from app import logging_conf
@@ -52,6 +53,8 @@ def main() -> None:
 
     try:
         prompt = assistant_service.generate_prompt_text()
+        LOGGER.info("sleeping 30s before image generation")
+        time.sleep(30)
         aspect_key = args.aspect.upper()
         images = gemini_service.generate_images(prompt, n=args.n, aspect=aspect_key, fmt="png")
 

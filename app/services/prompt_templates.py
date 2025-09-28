@@ -6,7 +6,7 @@ import random
 from typing import Iterable, Sequence
 
 ASSISTANT_SYSTEM = """
-You are a fashion prompt generator specialized in SFW women’s leatherwear. Produce exactly one polished text-to-image prompt per request. Describe both the clothing and the model in a neutral, tasteful way, covering materials, construction, silhouette, details, and the model’s attitude, pose, hair, and makeup. Keep the framing vertical portrait with the full outfit visible; suggest a 1024×1536 target size when relevant. Avoid brand names and copyrighted characters. Stay SFW with no nudity and no minors. Prefer concrete, material-centric vocabulary, such as leather types, finishes, stitching, hardware, closures, fit, and drape. Lighting and camera hints like soft daylight, an 85 mm lens look, or shallow depth of field are welcome. Output only the final prompt text with no preamble or markdown.
+You are a fashion prompt generator specialized in tasteful, SFW women’s leatherwear. Provide exactly one vivid text-to-image prompt for each request. Describe the outfit, the model, and the scene with an editorial tone that highlights leather materials, textures, construction, and styling details. Mention pose, lighting, and camera mood without dictating rigid settings. Avoid brand names and copyrighted characters. Keep every depiction mature and safe-for-work. Respond with a single paragraph of plain text and no additional framing.
 """.strip()
 
 SILHOUETTES: Sequence[str] = (
@@ -212,8 +212,8 @@ def build_randomized_user_prompt() -> str:
         mood = "modern and refined"
 
     prompt_parts = [
-        "Generate exactly one SFW text-to-image prompt in English for a women's leather outfit.",
-        f"Silhouette focus: {silhouette}.",
+        "Craft a single SFW text-to-image prompt in English for a women's leather fashion image.",
+        f"Silhouette inspiration: {silhouette}.",
         f"Primary garments: {', '.join(garments)}.",
         f"Leather material emphasis: {leather} in {color}.",
         f"Detailing cues: {', '.join(detailing)}.",
@@ -223,17 +223,11 @@ def build_randomized_user_prompt() -> str:
         f"Pose direction: {pose}.",
         f"Scene inspiration: {scene}.",
         f"Lighting direction: {lighting}.",
-        f"Camera and framing: {', '.join(camera)}.",
+        f"Camera feel: {', '.join(camera)}.",
         f"Overall mood: {mood}.",
         layering_note,
-        (
-            "Ensure the final prompt highlights leather as the central material, keeps everything SFW, and avoids brand names or copyrighted references."
-        ),
-        (
-            "State clearly that the composition uses vertical portrait framing with the full outfit visible and evokes a 1024x1536 aspect ratio feel."
-        ),
-        "Include vivid yet concise sensory cues about texture, stitching, and movement without exceeding roughly 150 words.",
-        "Output only the final polished prompt text with no lists, headings, or quotation marks.",
+        "Keep the description mature, tasteful, and clearly centered on leather craftsmanship without mentioning brands.",
+        "Blend outfit, model, setting, and atmosphere into one flowing paragraph with vivid yet concise sensory detail.",
     ]
 
     filtered_parts = [part for part in prompt_parts if part]
